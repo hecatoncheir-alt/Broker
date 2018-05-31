@@ -72,6 +72,7 @@ func (broker *Broker) Connect(host string, port int) error {
 func (broker *Broker) WriteToTopic(topic string, message EventData) error {
 	message.APIVersion = broker.APIVersion
 	message.ServiceName = broker.ServiceName
+
 	event, err := json.Marshal(message)
 	if err != nil {
 		return err
@@ -98,6 +99,7 @@ func (broker *Broker) ListenTopic(topic string, channel string) (<-chan []byte, 
 	consumer.AddConcurrentHandlers(handler, 6)
 
 	hostAddr := fmt.Sprintf("%v:%v", broker.IP, strconv.Itoa(broker.Port))
+
 	go consumer.ConnectToNSQD(hostAddr)
 
 	return events, nil
