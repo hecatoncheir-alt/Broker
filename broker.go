@@ -16,6 +16,7 @@ type EventData struct {
 	Data        string
 	APIVersion  string
 	ServiceName string
+	ClientID    string
 }
 
 // New constructor for Broker
