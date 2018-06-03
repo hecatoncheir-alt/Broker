@@ -1,23 +1,24 @@
 package broker
 
 import (
-	"encoding/json"
 	"log"
 	"testing"
 
 	"github.com/hecatoncheir/Configuration"
 )
 
-func TestBrokerCanSendMessageToNSQ(test *testing.T) {
+func TestBrokerCanSendMessage(test *testing.T) {
 	bro := New("1.0.0", "Test service name")
 
 	config := configuration.New()
 
 	err := bro.Connect(config.Development.Broker.Host, config.Development.Broker.Port)
+
 	if err != nil {
-		log.Println("Need started NSQ")
 		log.Println(err)
 	}
+
+	defer bro.Connection.Close()
 
 	// item := map[string]string{"Name": "test item"}
 
@@ -33,12 +34,11 @@ func TestBrokerCanSendMessageToNSQ(test *testing.T) {
 		test.Error(err)
 	}
 
-	defer bro.Producer.Stop()
-
 	for item := range items {
-		data := map[string]string{}
-		json.Unmarshal(item, &data)
-		if data["Name"] == "test item" {
+		if item.Message == "Name" && item.Data == "test item" {
+			break
+		} else {
+			test.Errorf("Not right message structure")
 			break
 		}
 	}

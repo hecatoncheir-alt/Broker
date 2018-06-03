@@ -1,13 +1,11 @@
 package broker
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 
-	nsq "github.com/bitly/go-nsq"
+	"github.com/nats-io/go-nats"
 )
 
 // EventData is a struct of event for send or receive from broker
@@ -24,9 +22,6 @@ func New(apiVersion, serviceName string) *Broker {
 	broker := Broker{}
 	broker.APIVersion = apiVersion
 	broker.ServiceName = serviceName
-	broker.configuration = nsq.NewConfig()
-	// broker.сonfiguration.MaxInFlight = 6
-	// broker.сonfiguration.MsgTimeout = time.Duration(time.Second * 6)
 	broker.Log = log.New(os.Stdout, "Broker: ", 3)
 	return &broker
 }
@@ -36,37 +31,50 @@ type Broker struct {
 	IP            string
 	APIVersion    string
 	ServiceName   string
+	Connection    *nats.Conn
+	OutputChannel chan<- *EventData
+	InputChannel  <-chan *EventData
 	Port          int
-	configuration *nsq.Config
-	Producer      *nsq.Producer
 	Log           *log.Logger
 }
 
 // connectToMessageBroker method for connect to message broker
-func (broker *Broker) connectToMessageBroker(host string, port int) (*nsq.Producer, error) {
+func (broker *Broker) connectToMessageBroker(host string, port int) (chan<- *EventData, <-chan *EventData) {
+
 	if host != "" && string(port) != "" {
 		broker.IP = host
 		broker.Port = port
 	}
 
-	hostAddr := fmt.Sprintf("%v:%v", broker.IP, strconv.Itoa(broker.Port))
-	producer, err := nsq.NewProducer(hostAddr, broker.configuration)
-
+	natsURL := fmt.Sprintf("nats://%v:%v", host, port)
+	connection, err := nats.Connect(natsURL)
 	if err != nil {
 		broker.Log.Print("Could not connect to message broker")
+		log.Fatalf(err.Error())
 	}
 
-	broker.Log.Printf("Connected to message broker")
+	broker.Connection = connection
 
-	return producer, err
+	encodedConnection, err := nats.NewEncodedConn(connection, nats.JSON_ENCODER)
+	if err != nil {
+		broker.Log.Print("Could not encode connection of message broker")
+	}
 
+	recvCh := make(chan *EventData)
+	encodedConnection.BindRecvChan(broker.APIVersion, recvCh)
+
+	sendCh := make(chan *EventData)
+	encodedConnection.BindSendChan(broker.APIVersion, sendCh)
+
+	return sendCh, recvCh
 }
 
 // Connect to message broker for publish events
 func (broker *Broker) Connect(host string, port int) error {
-	producer, err := broker.connectToMessageBroker(host, port)
-	broker.Producer = producer
-	return err
+	sendChannel, reciveChannel := broker.connectToMessageBroker(host, port)
+	broker.OutputChannel = sendChannel
+	broker.InputChannel = reciveChannel
+	return nil
 }
 
 // WriteToTopic method for publish message to topic
@@ -74,34 +82,22 @@ func (broker *Broker) WriteToTopic(topic string, message EventData) error {
 	message.APIVersion = broker.APIVersion
 	message.ServiceName = broker.ServiceName
 
-	event, err := json.Marshal(message)
-	if err != nil {
-		return err
-	}
-
-	go broker.Producer.Publish(topic, event)
+	broker.OutputChannel <- &message
 	return nil
 }
 
 // ListenTopic get events in channel of topic
-func (broker *Broker) ListenTopic(topic string, channel string) (<-chan []byte, error) {
-	consumer, err := nsq.NewConsumer(topic, channel, broker.configuration)
-	if err != nil {
-		return nil, err
-	}
+func (broker *Broker) ListenTopic(topic string, channel string) (<-chan *EventData, error) {
 
-	events := make(chan []byte, 6)
+	inputChannel := make(chan *EventData)
 
-	handler := nsq.HandlerFunc(func(message *nsq.Message) error {
-		events <- message.Body
-		return nil
-	})
+	go func() {
+		for event := range broker.InputChannel {
+			if event.APIVersion == channel {
+				inputChannel <- event
+			}
+		}
+	}()
 
-	consumer.AddConcurrentHandlers(handler, 6)
-
-	hostAddr := fmt.Sprintf("%v:%v", broker.IP, strconv.Itoa(broker.Port))
-
-	go consumer.ConnectToNSQD(hostAddr)
-
-	return events, nil
+	return inputChannel, nil
 }
