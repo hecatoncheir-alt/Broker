@@ -28,18 +28,16 @@ func New(apiVersion, serviceName string) *Broker {
 
 // Broker is a object of message stream
 type Broker struct {
-	IP            string
-	APIVersion    string
-	ServiceName   string
-	Connection    *nats.Conn
-	OutputChannel chan<- *EventData
-	InputChannel  <-chan *EventData
-	Port          int
-	Log           *log.Logger
+	IP          string
+	APIVersion  string
+	ServiceName string
+	Connection  *nats.EncodedConn
+	Port        int
+	Log         *log.Logger
 }
 
 // connectToMessageBroker method for connect to message broker
-func (broker *Broker) connectToMessageBroker(host string, port int) (chan<- *EventData, <-chan *EventData) {
+func (broker *Broker) connectToMessageBroker(host string, port int) *nats.EncodedConn {
 
 	if host != "" && string(port) != "" {
 		broker.IP = host
@@ -53,27 +51,18 @@ func (broker *Broker) connectToMessageBroker(host string, port int) (chan<- *Eve
 		log.Fatalf(err.Error())
 	}
 
-	broker.Connection = connection
-
 	encodedConnection, err := nats.NewEncodedConn(connection, nats.JSON_ENCODER)
 	if err != nil {
 		broker.Log.Print("Could not encode connection of message broker")
 	}
 
-	recvCh := make(chan *EventData)
-	encodedConnection.BindRecvChan(broker.APIVersion, recvCh)
-
-	sendCh := make(chan *EventData)
-	encodedConnection.BindSendChan(broker.APIVersion, sendCh)
-
-	return sendCh, recvCh
+	return encodedConnection
 }
 
 // Connect to message broker for publish events
 func (broker *Broker) Connect(host string, port int) error {
-	sendChannel, reciveChannel := broker.connectToMessageBroker(host, port)
-	broker.OutputChannel = sendChannel
-	broker.InputChannel = reciveChannel
+	connection := broker.connectToMessageBroker(host, port)
+	broker.Connection = connection
 	return nil
 }
 
@@ -82,7 +71,12 @@ func (broker *Broker) WriteToTopic(topic string, message EventData) error {
 	message.APIVersion = broker.APIVersion
 	message.ServiceName = broker.ServiceName
 
-	broker.OutputChannel <- &message
+	err := broker.Connection.Publish(topic, message)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
 	return nil
 }
 
@@ -91,13 +85,11 @@ func (broker *Broker) ListenTopic(topic string, channel string) (<-chan *EventDa
 
 	inputChannel := make(chan *EventData)
 
-	go func() {
-		for event := range broker.InputChannel {
-			if event.APIVersion == channel {
-				inputChannel <- event
-			}
+	broker.Connection.Subscribe(topic, func(event *EventData) {
+		if event.APIVersion == channel {
+			inputChannel <- event
 		}
-	}()
+	})
 
 	return inputChannel, nil
 }
