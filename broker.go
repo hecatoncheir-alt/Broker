@@ -78,7 +78,7 @@ func (broker *Broker) Connect(host string, port int) error {
 }
 
 func (broker *Broker) SubscribeOnEvents(connection io.ReadCloser) {
-	request := make([]byte, 1024)
+	request := make([]byte, 2560)
 
 	defer connection.Close()
 
@@ -93,7 +93,7 @@ func (broker *Broker) SubscribeOnEvents(connection io.ReadCloser) {
 		event := EventData{}
 		err = json.Unmarshal(request[:lengthOfBytes], &event)
 		if err != nil {
-			broker.Log.Printf("Error by unmarshal event: %v", request[:lengthOfBytes])
+			broker.Log.Printf("Error by unmarshal event: %v. Error: %v", string(request[:lengthOfBytes]), err)
 			continue
 		}
 
