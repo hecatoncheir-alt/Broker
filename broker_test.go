@@ -1,41 +1,39 @@
 package broker
 
 import (
-	"log"
 	"testing"
 
 	"github.com/hecatoncheir/Configuration"
 )
 
 func TestBrokerCanSendMessage(test *testing.T) {
-	bro := New("1.0.0", "Test service name")
-
 	config := configuration.New()
 
-	err := bro.Connect(config.Development.Broker.Host, config.Development.Broker.Port)
-
+	firstService := New(config.APIVersion, "First service")
+	err := firstService.Connect(config.Development.EventBus.Host, config.Development.EventBus.Port)
 	if err != nil {
-		log.Println(err)
+		test.Error(err)
 	}
 
-	defer bro.Connection.Close()
+	defer firstService.Connection.Close()
+
+	secondService := New(config.APIVersion, "Second service")
+	err = secondService.Connect(config.Development.EventBus.Host, config.Development.EventBus.Port)
+
+	if err != nil {
+		test.Error(err)
+	}
+
+	defer secondService.Connection.Close()
 
 	// item := map[string]string{"Name": "test item"}
 
 	item := EventData{Message: "Name", Data: "test item"}
 
-	items, err := bro.ListenTopic(config.Development.InitialTopic, config.APIVersion)
-	if err != nil {
-		test.Error(err)
-	}
+	go secondService.Write(item)
 
-	err = bro.WriteToTopic(config.Development.InitialTopic, item)
-	if err != nil {
-		test.Error(err)
-	}
-
-	for item := range items {
-		if item.Message == "Name" && item.Data == "test item" {
+	for item := range firstService.InputChannel {
+		if item.Message == "Name" && item.Data == "test item" && item.ServiceName == "Second service" {
 			break
 		} else {
 			test.Errorf("Not right message structure")

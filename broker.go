@@ -1,11 +1,12 @@
 package broker
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"os"
-
-	"github.com/nats-io/go-nats"
 )
 
 // EventData is a struct of event for send or receive from broker
@@ -19,77 +20,106 @@ type EventData struct {
 
 // New constructor for Broker
 func New(apiVersion, serviceName string) *Broker {
-	broker := Broker{}
-	broker.APIVersion = apiVersion
-	broker.ServiceName = serviceName
-	broker.Log = log.New(os.Stdout, "Broker: ", 3)
+	logger := log.New(os.Stdout, "Broker: ", 3)
+	broker := Broker{
+		APIVersion:    apiVersion,
+		ServiceName:   serviceName,
+		Log:           logger,
+		InputChannel:  make(chan EventData),
+		OutputChannel: make(chan EventData)}
+
+	go func() {
+		for outputEvent := range broker.OutputChannel {
+			err := broker.write(outputEvent)
+			if err != nil {
+				broker.Log.Printf("Error write event: %v to event bus", outputEvent)
+			}
+		}
+	}()
+
 	return &broker
 }
 
 // Broker is a object of message stream
 type Broker struct {
+	Port        int
 	IP          string
 	APIVersion  string
 	ServiceName string
-	Connection  *nats.EncodedConn
-	Port        int
-	Log         *log.Logger
-}
 
-// connectToMessageBroker method for connect to message broker
-func (broker *Broker) connectToMessageBroker(host string, port int) *nats.EncodedConn {
+	InputChannel  chan EventData
+	OutputChannel chan EventData
 
-	if host != "" && string(port) != "" {
-		broker.IP = host
-		broker.Port = port
-	}
-
-	natsURL := fmt.Sprintf("nats://%v:%v", host, port)
-	connection, err := nats.Connect(natsURL)
-	if err != nil {
-		broker.Log.Print("Could not connect to message broker")
-		log.Fatalf(err.Error())
-	}
-
-	encodedConnection, err := nats.NewEncodedConn(connection, nats.JSON_ENCODER)
-	if err != nil {
-		broker.Log.Print("Could not encode connection of message broker")
-	}
-
-	return encodedConnection
+	Connection *net.TCPConn
+	Log        *log.Logger
 }
 
 // Connect to message broker for publish events
 func (broker *Broker) Connect(host string, port int) error {
-	connection := broker.connectToMessageBroker(host, port)
+
+	address := fmt.Sprintf("%v:%v", host, port)
+	tcpAddr, err := net.ResolveTCPAddr("tcp4", address)
+	if err != nil {
+		broker.Log.Print("Could not connect to message broker")
+		return err
+	}
+
+	connection, err := net.DialTCP("tcp", nil, tcpAddr)
+	if err != nil {
+		broker.Log.Print("Could not connect to message broker")
+		return err
+	}
+
 	broker.Connection = connection
+
+	go broker.SubscribeOnEvents(connection)
+
 	return nil
 }
 
-// WriteToTopic method for publish message to topic
-func (broker *Broker) WriteToTopic(topic string, message EventData) error {
-	message.APIVersion = broker.APIVersion
-	message.ServiceName = broker.ServiceName
+func (broker *Broker) SubscribeOnEvents(connection io.ReadCloser) {
+	request := make([]byte, 1024)
 
-	err := broker.Connection.Publish(topic, message)
+	defer connection.Close()
+
+	for {
+		lengthOfBytes, err := connection.Read(request)
+
+		if err != nil || lengthOfBytes == 0 {
+			broker.InputChannel <- EventData{Message: "Connection closed"}
+			break // connection already closed by client
+		}
+
+		event := EventData{}
+		err = json.Unmarshal(request[:lengthOfBytes], &event)
+		if err != nil {
+			broker.Log.Printf("Error by unmarshal event: %v", request[:lengthOfBytes])
+			continue
+		}
+
+		broker.InputChannel <- event
+	}
+}
+
+func (broker *Broker) write(data EventData) error {
+	encodedData, err := json.Marshal(data)
 	if err != nil {
-		fmt.Println(err)
+		return err
+	}
+
+	_, err = broker.Connection.Write(encodedData)
+	if err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// ListenTopic get events in channel of topic
-func (broker *Broker) ListenTopic(topic string, channel string) (<-chan *EventData, error) {
+// Write method for publish message to EventBus
+func (broker *Broker) Write(data EventData) {
 
-	inputChannel := make(chan *EventData)
+	data.ServiceName = broker.ServiceName
+	data.APIVersion = broker.APIVersion
 
-	broker.Connection.Subscribe(topic, func(event *EventData) {
-		if event.APIVersion == channel {
-			inputChannel <- event
-		}
-	})
-
-	return inputChannel, nil
+	broker.OutputChannel <- data
 }
